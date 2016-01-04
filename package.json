@@ -1,0 +1,66 @@
+{
+  "name": "mozu-validator-bot",
+  "version": "1.0.0",
+  "description": "a slack bot and simple http api for validating mozu npm packages across CI vendors",
+  "main": "lib/index.js",
+  "scripts": {
+    "prestart": "npm run ci-build",
+    "start": "node lib/index.js",
+    "lint": "eslint src",
+    "babel": "babel src -d lib",
+    "preci-build": "npm run lint",
+    "ci-build": "npm run babel",
+    "postci-build": "npm test",
+    "validate-package": "mozu-validate-npm-package",
+    "ci-build-stable": "npm run ci-build",
+    "postci-build-stable": "npm run cov",
+    "cov": "istanbul cover test/*.js",
+    "test": "npm run tape",
+    "tape": "tape test/**/*.js"
+  },
+  "babel": {
+    "presets": [
+      "es2015-node4"
+    ],
+    "plugins": [
+      "transform-object-rest-spread"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mozu/mozu-validator-bot.git"
+  },
+  "keywords": [
+    "mozu",
+    "validator",
+    "bot",
+    "continuous-integration"
+  ],
+  "author": "james zetlen",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mozu/mozu-validator-bot/issues"
+  },
+  "homepage": "https://github.com/mozu/mozu-validator-bot#readme",
+  "dependencies": {
+    "body-parser": "^1.14.2",
+    "botkit": "0.0.5",
+    "bristol": "^0.3.3",
+    "express": "^4.13.3",
+    "moment": "^2.10.6",
+    "octonode": "^0.7.4",
+    "rc": "^1.1.6",
+    "rx": "^4.0.7",
+    "semver": "^5.1.0"
+  },
+  "devDependencies": {
+    "babel-cli": "^6.3.17",
+    "babel-eslint": "^5.0.0-beta6",
+    "babel-plugin-transform-object-rest-spread": "^6.3.13",
+    "babel-preset-es2015-node4": "^2.0.2",
+    "eslint": "^1.10.3",
+    "istanbul": "^0.4.1",
+    "mozu-validate-npm-package": "^1.0.1",
+    "tape": "^4.4.0"
+  }
+}
