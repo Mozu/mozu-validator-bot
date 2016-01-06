@@ -1,7 +1,6 @@
 import { Observable } from 'rx';
 import octonode from 'octonode';
 
-
 export default function GithubClient({ logger, githubToken, githubOrg }) {
   const github = octonode.client(githubToken);
   const getClient = (repo) => {
@@ -19,18 +18,33 @@ export default function GithubClient({ logger, githubToken, githubOrg }) {
     };
   };
   return {
-    repoStatus(repo) {
-      let retrieve = getClient(repo);
-      return retrieve('statuses', 'master');
-    },
-    repoInfo(repo) {
+    fullCommitStatus(repo, sha) {
+      logger.info(
+        `getting full commit status for ${repo}#${sha}`
+      );
       let retrieve = getClient(repo);
       return Observable.forkJoin(
-        retrieve('contents', '/', 'master'),
-        retrieve('tags'),
-        retrieve('commit', 'HEAD'),
-        (contents, tags, head) => ({ contents, tags, head })
+        retrieve('statuses', sha),
+        retrieve('contents', '/', sha),
+        (statuses, contents) => ({ statuses, contents })
       );
+    },
+    latestCommitStatus(repo, branch = 'master') {
+      logger.info(
+        `getting latest commit status for ${repo}`
+      );
+      let retrieve = getClient(repo);
+      return Observable.forkJoin(
+        retrieve('statuses', branch),
+        retrieve('contents', '/', branch),
+        retrieve('tags'),
+        retrieve('commits'),
+        (statuses, contents, tags, commits) =>
+          ({ statuses, contents, tags, commits })
+      );
+    },
+    tags(repo) {
+      return getClient(repo)('tags');
     }
   }
 }

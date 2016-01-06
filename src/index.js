@@ -1,15 +1,19 @@
+import { Observable } from 'rx';
 import { slackbot } from 'botkit';
-import conf from './conf'
+import semver from 'semver';
+import moment from 'moment';
+import NpmClient from 'npm-registry-client';
+import conf from './conf';
 import Logger from './logger';
 import GithubClient from './github-client';
 import frivolity from './frivolity';
-import moment from 'moment';
 import GithubHook from './github-hook-listener';
 
 const logger = Logger(conf);
 const github = GithubClient({ logger, ...conf });
 const botController = slackbot({ logger });
 const githubHook = GithubHook({ logger, ...conf });
+const npmClient = new NpmClient({ log: logger });
 
 const bot = botController.spawn({ 
   token: conf.slackToken,
@@ -19,6 +23,9 @@ const bot = botController.spawn({
 }).startRTM();
 
 const dobbs = frivolity(conf, botController);
+
+const successColor = '#1DED05';
+const errorColor = '#D00D00';
 
 const standardMessageFormat = {
   icon_url: conf.botIcon,
@@ -35,34 +42,95 @@ const errorMessageFormat = {
   username: conf.botName
 };
 
-githubHook.incoming.subscribe(
-  (r) => {
-    let payload = r.data;
-    let event = r.event;
+function allCiSucceeded({ repository, sha, statuses, contents }) {
+  let successes = statuses.filter(({ state }) => state === 'success');
+  return conf.ciProviders.every(
+    ({ name, configFile, statusContext }) => {
+      let isConfigured = contents.some(({ path }) => path === configFile);
+      let successFound = !isConfigured ||
+        successes.find(({ context }) => context === statusContext);
+      if (isConfigured && successFound) {
+        logger.notice(
+          `${name} build success for ${repository.name}#${sha}, triggered by`,
+          successFound
+        );
+      }
+      return !!successFound;
+    }
+  )
+}
+const getNpmStatus = Observable.fromNodeCallback(
+  npmClient.get,
+  npmClient,
+  (data) => data
+);
+
+githubHook.incoming.filter(
+  ({ event, data }) => event === 'status' && data.state === 'success'
+).do(
+  ({ data }) => logger.info('Received success notification', data)
+).map(
+  ({ data }) => Observable.forkJoin(
+    Observable.of(data),
+    github.fullCommitStatus(data.repository.name, data.sha),
+    ({ repository, sha }, { statuses, contents }) =>
+      ({ repository, sha, statuses, contents })
+  )
+).concatAll().filter(
+  ({ repository, sha, statuses, contents }) => {
+    logger.info('Received full status for', repository.name,  sha);
+    let hasPkg = contents.some(({ path }) => path === 'package.json');
+    return hasPkg && allCiSucceeded({ repository, sha, statuses, contents });
+  }
+).map(
+  ({ repository, sha }) => Observable.forkJoin(
+    Observable.of({ repository, sha }),
+    github.tags(repository.name),
+    ({ repository, sha }, tags) =>
+      ({
+        repository,
+        sha,
+        tag: tags.find(({ commit }) => commit && commit.sha === sha)
+      })
+  )
+).concatAll().filter(({ tag }) => tag && semver.clean(tag.name))
+.subscribe(
+  ({ repository, sha, tag }) => {
+    let name = repository.name;
+    logger.notice(
+      'gonna notify CI success on tag', name, sha
+    );
     bot.sendWebhook({
-      channel: 'dobbstest',
-      text: 'Damn, son, I got a ' + event,
+      channel: conf.statusChannel,
       attachments: [
         {
-          fallback: JSON.stringify(payload).slice(0, 100),
-          color: '#1DED05',
-          title: 'GitHub sez:',
-          fields: Object.keys(payload).map((k) => {
+          color: successColor,
+          fallback: `${name} ${tag.name} ready for publish.`,
+          pretext: `npm package build success for \`${name}\`!`,
+          title: `${tag.name} of the ${name} package is ready to be ` +
+                 `published to NPM.`,
+          text: `When publishing, be sure your local repository is at ` +
+                `that exact version: \`git checkout ${tag.name} && npm ` +
+                `publish\`.`,
+          fields: Object.keys(tag).map((k) => {
             let stringValue =
-              typeof payload[k] === 'string' ? payload[k] :
-                JSON.stringify(payload[k]);
+              typeof tag[k] === 'string' ? tag[k] :
+                JSON.stringify(tag[k]);
             return {
               title: k,
               value: stringValue,
               short: stringValue.length < 20
             };
-          })
+          }),
+          mrkdwn_in: ['pretext', 'text']
         }
       ],
-      ...standardMessageFormat
-    });
-  }
+      ...successMessageFormat
+    })
+  },
+  logger.error
 );
+
 
 function addPackage(dobbs, msg, packageName, { head, tags, contents }) {
   dobbs.startConversation(msg, (err, convo) => {
@@ -164,18 +232,94 @@ Its most recent commit is *${head.sha.slice(0,8)}*, created by ` +
   });
 }
 
+function getPackageStatus(dobbs, msg, packageName, branch) {
+  return Observable.forkJoin
+    github.latestCommitStatus(packageName, branch),
+    getNpmStatus(packageName),
+    (githubInfo, npmInfo) => ({ npmInfo, ...githubInfo })
+  ).map(
+    (data) => ({
+      latestGoodTag: data.tags.find(
+        (tag) => allCiSucceeded({
+          repository: { name: packageName },
+          sha: tag.commit.sha,
+          statuses: data.statuses.filter(
+            ({ url }) => ~url.indexOf(tag.commit.sha),
+          ),
+          contents: data.contents
+        })
+      ),
+      ...data
+    })
+  )
+}
+
+
 dobbs.hears(
-  ['status ([A-Za-z0-9\-\.\_]+)'],
+  ['status ([A-Za-z0-9\-\.\_]+)(?: ([A-Za-z0-9\-\/\_]+))?'],
   ['direct_mention'],
   (dobbs, msg) => {
     let packageName = msg.match[1];
+    let branch = msg.match[2] || 'master';
     logger.info('package status requested', packageName, msg);
-    github.repoStatus(packageName)
+    getPackageStatus(dobbs, msg, packageName, branch)
     .subscribe(
-      (data) => {
-        logger.info('got package status', packageName, data);
+      ({ npmInfo, contents, latestGoodTag, commits }) => {
+        let headClear = latestGoodTag &&
+          latestGoodTag.commit.sha === commits[0].sha;
+        let payload = {
+          fields: [],
+          mkrdwn_in: ['text']
+        };
+        if (headClear) {
+          payload.color = successColor;
+          payload.text = `The \`${branch}\` branch of \`${packageName}\` is ` +
+            `currently at exactly *${tag.name$}*. That version is confirmed ` +
+            `valid and ready to be published.`;
+          payload.fields.push({
+            title: 'Ready for publish?',
+            value: ':white_check_mark:',
+            short: true
+          });
+          payload.fields.push({
+            title: 'Run command',
+            value: '`npm publish`',
+            short: true
+          });
+        } else {
+          payload.text = `The \`${branch}\` branch of \`${packageName}\` is ` +
+            `not ready for publish.`
+          let commitsBehind = latestGoodTag && commits.findIndex(
+            ({ sha }) => sha === latestGoodTag.commit.sha
+          );
+          payload.color = errorColor;
+        }
+        conf.ciProviders.forEach(({ name, configFile }) => {
+          payload.fields.push({
+            title: name + ' CI Enabled',
+            short: true,
+            value: contents.some(({ path }) => path === configFile) ?
+              `*Yes* _(\`${configFile}\` present)_`
+              :
+              `*No* _(\`${configFile}\` absent)_`
+          });
+        })
+        dobbs.reply(msg, {
+          text: `Status for \`${packageName}\``,
+          attachments: [
+            {
+              color: headClear ? successColor : errorColor,
+
+            }
+          ]
+          mrkdwn_in: ['text']
+          ...standardMessageFormat
+        })
+      },
+      (err) => {
+        logger.error(err);
       }
-    );
+    )
   }
 )
 

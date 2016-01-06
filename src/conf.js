@@ -20,5 +20,27 @@ export default rc('mozu-validator-bot', {
   // to the organization. Obviously a blank token won't work; put a user
   // token in `.mozu-validator-botrc`.
   githubToken: GITHUB_TOKEN,
-  githubOrg: 'mozu'
+  githubOrg: 'mozu',
+  // Each CI provider in this list will make the bot check, for each repo,
+  // whether it has a file in its root that matches the `configFile` name for
+  // the provider. If the repo has such a file, then for every "success" event
+  // for that repo, the bot will check all recent GitHub statuses for success
+  // messages whose `context` property matches the `statusContext` for the
+  // provider.
+  // The effect of this is that if a repo has a `.travis.yml` at root, then
+  // the bot won't validate the new version until it sees a "success" status
+  // whose `context` value is "continuous-integration/travis-ci/push". Thus,
+  // the bot always waits for all configured providers to succeed.
+  ciProviders: [
+    {
+      name: 'Appveyor',
+      configFile: 'appveyor.yml',
+      statusContext: 'continuous-integration/appveyor/branch'
+    },
+    {
+      name: 'Travis',
+      configFile: '.travis.yml',
+      statusContext: 'continuous-integration/travis-ci/push'
+    }
+  ]
 });

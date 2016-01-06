@@ -7,7 +7,7 @@
     "prestart": "npm run ci-build",
     "start": "node lib/index.js",
     "lint": "eslint src",
-    "babel": "babel src -d lib",
+    "babel": "babel src -d lib -s inline",
     "preci-build": "npm run lint",
     "ci-build": "npm run babel",
     "postci-build": "npm test",
