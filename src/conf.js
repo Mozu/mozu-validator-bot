@@ -8,6 +8,7 @@ export default rc('mozu-validator-bot', {
   slackToken: SLACK_TOKEN,
   logPath: LOG_PATH || path.join(process.cwd(), 'mozu-validator-bot.log'),
   logLevel: LOG_LEVEL || 5,
+  npmRegistry: 'https://registry.npmjs.org/',
   botIcon: 'http://i.imgur.com/QFFAmYT.png',
   successIcon: 'http://i.imgur.com/9yzNfsl.png',
   errorIcon: 'http://i.imgur.com/xLUWhF6.png',

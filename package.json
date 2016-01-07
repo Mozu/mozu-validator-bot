@@ -4,6 +4,9 @@
   "description": "a slack bot and simple http api for validating mozu npm packages across CI vendors",
   "main": "lib/index.js",
   "scripts": {
+    "premon": "npm run ci-build",
+    "mon": "nodemon --ignore --lib lib/index.js",
+    "debug": "npm run ci-build && node-debug lib/index.js",
     "prestart": "npm run ci-build",
     "start": "node lib/index.js",
     "lint": "eslint src",
@@ -48,6 +51,7 @@
     "bristol": "^0.3.3",
     "express": "^4.13.3",
     "moment": "^2.10.6",
+    "node-fetch": "^1.3.3",
     "octonode": "^0.7.4",
     "rc": "^1.1.6",
     "rx": "^4.0.7",
@@ -61,6 +65,7 @@
     "eslint": "^1.10.3",
     "istanbul": "^0.4.1",
     "mozu-validate-npm-package": "^1.0.1",
+    "nodemon": "^1.8.1",
     "tape": "^4.4.0"
   }
 }

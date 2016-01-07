@@ -1,19 +1,21 @@
-import { Observable } from 'rx';
+import Rx from 'rx';
 import { slackbot } from 'botkit';
+import fetch from 'node-fetch';
 import semver from 'semver';
 import moment from 'moment';
-import NpmClient from 'npm-registry-client';
 import conf from './conf';
 import Logger from './logger';
 import GithubClient from './github-client';
 import frivolity from './frivolity';
 import GithubHook from './github-hook-listener';
 
+if (conf.logLevel > 5) Rx.config.longStackSupport = true;
+const { Observable } = Rx;
+
 const logger = Logger(conf);
 const github = GithubClient({ logger, ...conf });
 const botController = slackbot({ logger });
 const githubHook = GithubHook({ logger, ...conf });
-const npmClient = new NpmClient({ log: logger });
 
 const bot = botController.spawn({ 
   token: conf.slackToken,
@@ -59,23 +61,30 @@ function allCiSucceeded({ repository, sha, statuses, contents }) {
     }
   )
 }
-const getNpmStatus = Observable.fromNodeCallback(
-  npmClient.get,
-  npmClient,
-  (data) => data
-);
 
-githubHook.incoming.filter(
+function getNpmStatus(packageName) {
+  return Observable.fromPromise(
+    fetch(conf.npmRegistry + packageName)
+      .then((res) => res.json())
+      .catch(() => false)
+  );
+}
+
+let successfulBuilds$ = githubHook.incoming.filter(
   ({ event, data }) => event === 'status' && data.state === 'success'
 ).do(
   ({ data }) => logger.info('Received success notification', data)
 ).map(
-  ({ data }) => Observable.forkJoin(
-    Observable.of(data),
-    github.fullCommitStatus(data.repository.name, data.sha),
-    ({ repository, sha }, { statuses, contents }) =>
-      ({ repository, sha, statuses, contents })
-  )
+  ({ data }) => {
+    let getRepoData = github.forRepo(data.repository.name);
+    return Observable.forkJoin(
+      Observable.just(data),
+      getRepoData('statuses', data.sha),
+      getRepoData('contents', '/', data.sha),
+      ({ repository, sha }, statuses, contents ) =>
+        ({ repository, sha, statuses, contents })
+    );
+  }
 ).concatAll().filter(
   ({ repository, sha, statuses, contents }) => {
     logger.info('Received full status for', repository.name,  sha);
@@ -85,7 +94,7 @@ githubHook.incoming.filter(
 ).map(
   ({ repository, sha }) => Observable.forkJoin(
     Observable.of({ repository, sha }),
-    github.tags(repository.name),
+    github.forRepo(repository.name)('tags'),
     ({ repository, sha }, tags) =>
       ({
         repository,
@@ -93,167 +102,194 @@ githubHook.incoming.filter(
         tag: tags.find(({ commit }) => commit && commit.sha === sha)
       })
   )
-).concatAll().filter(({ tag }) => tag && semver.clean(tag.name))
-.subscribe(
-  ({ repository, sha, tag }) => {
-    let name = repository.name;
-    logger.notice(
-      'gonna notify CI success on tag', name, sha
-    );
-    bot.sendWebhook({
-      channel: conf.statusChannel,
-      attachments: [
-        {
-          color: successColor,
-          fallback: `${name} ${tag.name} ready for publish.`,
-          pretext: `npm package build success for \`${name}\`!`,
-          title: `${tag.name} of the ${name} package is ready to be ` +
-                 `published to NPM.`,
-          text: `When publishing, be sure your local repository is at ` +
-                `that exact version: \`git checkout ${tag.name} && npm ` +
-                `publish\`.`,
-          fields: Object.keys(tag).map((k) => {
-            let stringValue =
-              typeof tag[k] === 'string' ? tag[k] :
-                JSON.stringify(tag[k]);
-            return {
-              title: k,
-              value: stringValue,
-              short: stringValue.length < 20
-            };
-          }),
-          mrkdwn_in: ['pretext', 'text']
-        }
-      ],
-      ...successMessageFormat
-    })
-  },
-  logger.error
-);
+).concatAll().filter(({ tag }) => tag && semver.clean(tag.name));
 
-
-function addPackage(dobbs, msg, packageName, { head, tags, contents }) {
-  dobbs.startConversation(msg, (err, convo) => {
-    if (err) logger.error(err);
-    let has = {
-      pkg: contents.some(({ path }) => path === 'package.json'),
-      travis: contents.some(({ path }) => path === '.travis.yml'),
-      appveyor: contents.some(({ path }) => path === 'appveyor.yml'),
-    };
-    let latestTag = tags[0];
-    let repoUrl = `https://github.com/${conf.githubOrg}/${packageName}`;
-    logger.info(`${packageName} latest tag:`, latestTag);
-    logger.info(`${packageName} head:`, head);
-    let author = head.commit.author;
-    let statusReply = `
-I found a repository for the \`${packageName}\` package on GitHub.
-Its latest tag is *${latestTag.name}*.
-Its most recent commit is *${head.sha.slice(0,8)}*, created by ` +
-      `${author.name} ${moment(author.date).fromNow()}, with this message:
-
-
-> ${head.commit.message}
-
-`;
-    if (!has.pkg) {
-      convo.say({
-        text: `I found a repository for \`${packageName}\`, but it has no ` +
-        `\`package.json\` file, so I don't think it's an NPM package.`,
-        ...errorMessageFormat
-      });
-      return convo.next();
-    } else if (has.travis && has.appveyor) {
-      statusReply +=
-        `I found both a \`.travis.yml\` and an \`appveyor.yml\` at the root ` +
-        `of the \`${conf.githubOrg}/${packageName}\` repository, so I'll ` +
-        `wait for both Travis and Appveyor to tell me that it has ` +
-        `successfully built before I validate a tag for deployment. Make ` +
-        `sure to setup the hooks for both!`
-    } else if (has.travis) {
-      statusReply +=
-        `I found a \`.travis.yml\` file at the root of the ` +
-        `\`${conf.githubOrg}/${packageName}\` repository, so I'll wait for ` +
-        `Travis to tell me that it has successfully built on Linux and/or ` +
-        `OSX before I validate a tag for deployment. Make sure to setup the ` +
-        `hook!`;
-    } else if (has.appveyor) {
-      statusReply +=
-        `I found an \`appveyor.yml\` file at the root of the ` +
-        `\`${conf.githubOrg}/${packageName}\` repository,  so I'll wait for ` +
-        `Appveyor to tell me that it has successfully built on Windows ` +
-        `before I validate a tag for deployment. Make sure to setup the hook!`;
-    } else {
-      statusReply +=
-        `*I didn't find any cloud CI configuration files I recognized in ` +
-        `the root of this repository.* I can recognize both \`.travis.yml\` ` +
-        `and \`appveyor.yml\`. I really would rather you did one or both ` +
-        `of those, but if you continue without doing so, I'll just validate ` +
-        `every tag as ready for deployment. :ghost: Scary!`
-    }
-    convo.say({
-      text: statusReply,
-      ...successMessageFormat
-    });
-    convo.ask('Is all that correct?', [
+successfulBuilds$.subscribeOnNext(({ repository, sha, tag }) => {
+  let name = repository.name;
+  logger.notice(
+    'gonna notify CI success on tag', name, sha
+  );
+  bot.sendWebhook({
+    channel: conf.statusChannel,
+    attachments: [
       {
-        pattern: bot.utterances.yes,
-        callback: (response, convo) => {
-          convo.say(
-            `I thought so. I'll be monitoring ${packageName} from now on.`
-          );
-          convo.say(
-            `Obviously, if anything changes, just say \`add package\` to ` +
-              `me again and I will update everything.`
-          );
-          finishAddPackage()
-          convo.next();
-        }
-      },
-      {
-        pattern: bot.utterances.no,
-        callback: (response, convo) => {
-          convo.say(
-            `OK. Make any necessary changes to the repository, or to me I ` +
-              `suppose, and try again later.`
-          );
-          convo.next();
-        }
-      },
-      {
-        default: true,
-        callback: (response, convo) => {
-          // just repeat the question
-          convo.repeat();
-          convo.next();
-        }
+        color: successColor,
+        fallback: `${name} ${tag.name} ready for publish.`,
+        pretext: `npm package build success for \`${name}\`!`,
+        title: `${tag.name} of the ${name} package is ready to be ` +
+          `published to NPM.`,
+        text: `When publishing, be sure your local repository is at ` +
+          `that exact version: \`git checkout ${tag.name} && npm ` +
+          `publish\`.`,
+        fields: Object.keys(tag).map((k) => {
+          let stringValue =
+            typeof tag[k] === 'string' ? tag[k] :
+              JSON.stringify(tag[k]);
+              return {
+                title: k,
+                value: stringValue,
+                short: stringValue.length < 20
+              };
+        }),
+        mrkdwn_in: ['pretext', 'text']
       }
-    ]);
-
+    ],
+    ...successMessageFormat
   });
-}
+});
 
-function getPackageStatus(dobbs, msg, packageName, branch) {
-  return Observable.forkJoin
-    github.latestCommitStatus(packageName, branch),
-    getNpmStatus(packageName),
-    (githubInfo, npmInfo) => ({ npmInfo, ...githubInfo })
-  ).map(
+successfulBuilds$.subscribeOnError(logger.error);
+
+function getPackageStatus(packageName, branch) {
+  let getRepoData = github.forRepo(packageName);
+  return getRepoData('tags')
+  .map(
+    (tags) => Observable.just(tags).forkJoin(
+      getRepoData('contents', '/', branch),
+      getRepoData('commits'),
+      (tags, contents, commits) => ({ tags, contents, commits })
+    )
+  ).concatAll().map(
     (data) => ({
       latestGoodTag: data.tags.find(
         (tag) => allCiSucceeded({
           repository: { name: packageName },
           sha: tag.commit.sha,
           statuses: data.statuses.filter(
-            ({ url }) => ~url.indexOf(tag.commit.sha),
+            ({ url }) => ~url.indexOf(tag.commit.sha)
           ),
           contents: data.contents
         })
+      ),
+      ciProvidersConfigured: conf.ciProviders.filter(
+        ({ configFile }) =>
+          data.contents.some(({ path }) => path === configFile)
       ),
       ...data
     })
   )
 }
 
+function formatPackageStatus(d) {
+  let {
+    packageName,
+    branch,
+    npmInfo,
+    contents,
+    latestGoodTag,
+    commits,
+    ciProvidersConfigured
+  } = d;
+  logger.info('about to format a status message', packageName, branch);
+  let status = {
+    fields: {}
+  };
+  let readyForPublish = false;
+  let headIsPublishable = false;
+
+  status.fields['CI Providers Configured'] =
+    ciProvidersConfigured.length > 0 ?
+      ciProvidersConfigured.map(({ name }) => name).join(', ')
+      :
+      '_None. I recommend at least one._';
+
+  if (!latestGoodTag) {
+    status.good = false;
+    status.text = `I couldn't find any tagged versions in the ` +
+      `\`${packageName}\` repository that had successfully built.`;
+    return status;
+  }
+
+  status.fields['Latest valid tag in repo'] = latestGoodTag.name;
+  logger.notice('latest good tag', latestGoodTag);
+  // status.fields['Latest tag created'] =
+  //   moment()
+  headIsPublishable = latestGoodTag &&
+    latestGoodTag.commit.sha === commits[0].sha;
+
+  if (!headIsPublishable) {
+    status.fields['Don\'t publish HEAD!'] = `The tip of the \`${branch}\` ` +
+      `branch of the \`${packageName}\` repository has moved ahead of the ` +
+      `latest known-good tag, so don't run \`npm publish\` willy-nilly; ` +
+      `use \`git checkout\` to get your working tree into a known-good ` +
+      `state first.`;
+  }
+
+  if (!npmInfo) {
+    status.fields['Current version on NPM'] = '_Never published!_';
+    if (ciProvidersConfigured.length > 0) {
+      status.text = `I couldn't find the \`${packageName}\` package on NPM, ` +
+        `but the ${latestGoodTag.name} tag in the repository has passed CI, ` +
+        `so we're ready for an initial publish to NPM!`
+      readyForPublish = true;
+      status.good = true;
+    } else {
+      status.text = `I couldn't find the \`${packageName}\` package on NPM, ` +
+        `and the repo has no CI configured, so I don't know for sure ` +
+        `whether the latest tag, ${latestGoodTag.name}, is ready. *Publish ` +
+        `to NPM at your own risk.*`;
+      status.good = false;
+      status.fields['Ready for publish?'] = ':question:';
+      return status;
+    }
+  }
+
+  let npmVersions = Object.keys(npmInfo.versions)
+    .sort(semver.rcompare)
+    .map((v) => npmInfo.versions[v]);
+  let currentNpm = npmVersions[0];
+
+  status.fields['Current version on NPM'] =
+    `<http://npmjs.org/package/${packageName}|${currentNpm.version}>`;
+  status.fields['Last published to NPM'] =
+    moment(npmInfo.time[currentNpm.version]).fromNow();
+
+  switch(semver.compare(currentNpm.version, latestGoodTag.name)) {
+    case 0:
+      status.good = true;
+      readyForPublish = false;
+      // TODO: compare the currentNpm.gitHead and latestGoodTag.commit.sha
+      // and say something terrified if they aren't the same
+      // also TODO check package.json to make sure it's what it should be
+      status.text = `NPM is already up to date with the latest good version ` +
+        `of \`${packageName}\`, *${currentNpm.version}*`
+      break;
+    case -1:
+      status.good = true;
+      readyForPublish = true;
+      status.text = `The current version of \`${packageName}\` published to ` +
+        `NPM is *${currentNpm.version}*, and the repository is ahead by at ` +
+        `least one ${semver.diff(currentNpm.version, latestGoodTag.name)} ` +
+        `version: it's at *${latestGoodTag.name}*. *Ready to publish!*`;
+      break;
+    case 1:
+      status.good = false;
+      readyForPublish = false;
+      status.text = `*Not good.* The current version of \`${packageName}\` ` +
+        `published to NPM is *${currentNpm.version}*, but the repository's ` +
+        `latest good version is *${latestGoodTag.name}*, which is at least ` +
+        `one ${semver.diff(currentNpm.version, latestGoodTag.name)} version ` +
+        `behind. Was a version published before it had built successfully? ` +
+        `Was a version published from a different branch than \`${branch}\`` +
+        `? *Please investigate.*`
+      break;
+    default:
+      status.good = false;
+      status.text = `The entire world is on fire.`;
+      break;
+  }
+
+  if (readyForPublish) {
+    status.fields['Ready for publish?'] = ':white_check_mark:';
+    status.fields['Run command:'] = headIsPublishable ?
+      '`npm publish`' :
+      `\`git checkout ${latestGoodTag.name}; npm publish\``;
+  } else {
+    status.fields['Ready for publish?'] = ':x:'
+  }
+
+  return status;
+}
 
 dobbs.hears(
   ['status ([A-Za-z0-9\-\.\_]+)(?: ([A-Za-z0-9\-\/\_]+))?'],
@@ -262,97 +298,31 @@ dobbs.hears(
     let packageName = msg.match[1];
     let branch = msg.match[2] || 'master';
     logger.info('package status requested', packageName, msg);
-    getPackageStatus(dobbs, msg, packageName, branch)
-    .subscribe(
-      ({ npmInfo, contents, latestGoodTag, commits }) => {
-        let headClear = latestGoodTag &&
-          latestGoodTag.commit.sha === commits[0].sha;
-        let payload = {
-          fields: [],
-          mkrdwn_in: ['text']
-        };
-        if (headClear) {
-          payload.color = successColor;
-          payload.text = `The \`${branch}\` branch of \`${packageName}\` is ` +
-            `currently at exactly *${tag.name$}*. That version is confirmed ` +
-            `valid and ready to be published.`;
-          payload.fields.push({
-            title: 'Ready for publish?',
-            value: ':white_check_mark:',
-            short: true
-          });
-          payload.fields.push({
-            title: 'Run command',
-            value: '`npm publish`',
-            short: true
-          });
-        } else {
-          payload.text = `The \`${branch}\` branch of \`${packageName}\` is ` +
-            `not ready for publish.`
-          let commitsBehind = latestGoodTag && commits.findIndex(
-            ({ sha }) => sha === latestGoodTag.commit.sha
-          );
-          payload.color = errorColor;
-        }
-        conf.ciProviders.forEach(({ name, configFile }) => {
-          payload.fields.push({
-            title: name + ' CI Enabled',
-            short: true,
-            value: contents.some(({ path }) => path === configFile) ?
-              `*Yes* _(\`${configFile}\` present)_`
-              :
-              `*No* _(\`${configFile}\` absent)_`
-          });
-        })
-        dobbs.reply(msg, {
-          text: `Status for \`${packageName}\``,
-          attachments: [
-            {
-              color: headClear ? successColor : errorColor,
 
-            }
-          ]
-          mrkdwn_in: ['text']
-          ...standardMessageFormat
-        })
-      },
-      (err) => {
-        logger.error(err);
-      }
-    )
-  }
-)
+    let packageStatus$ = getPackageStatus(packageName, branch);
 
-dobbs.hears(
-  ['add package ([A-Za-z0-9\-\.\_]+)'],
-  ['direct_mention'],
-  (dobbs, msg) => {
-    let packageName = msg.match[1];
-    logger.info('add package requested', packageName, msg);
-    github.repoInfo(packageName)
-    .subscribe(
-      (data) => {
-        logger.info(`successfully got github info for ${packageName}`, data);
-        addPackage(dobbs, msg, packageName, data);
-      },
-      (err) => {
-        if (err.statusCode === 404) {
-          logger.warning(
-            `${msg.user} asked about unknown package ${packageName}`
-          );
-          dobbs.reply(msg, {
-            text: `I couldn't find a repo named \`${packageName}\` in the ` +
-              `\`/${conf.githubOrg}\` GitHub organization. Is it public?`,
-            ...errorMessageFormat
-          });
-        } else {
-          logger.error(`unknown error requesting package ${packageName}`, err);
-          dobbs.reply(msg, {
-            text: `Unexpected error trying to talk to GitHub. Fix me!`,
-            ...errorMessageFormat
-          });
-        }
-      }
-    );
+    packageStatus$.subscribeOnNext((data) => {
+      let status = formatPackageStatus({ packageName, branch, ...data});
+      dobbs.reply(msg, {
+        text: `Status for \`${packageName}\``,
+        attachments: [{
+          color: status.good ? successColor : errorColor,
+          title: status.good ? 'Good News!' : 'Keep Calm!',
+          text: status.text,
+          fields: Object.keys(status.fields).map((k) => ({
+            title: k,
+            value: status.fields[k],
+            short: status.fields[k].length < 20
+          })),
+          mrkdwn_in: ['text', 'fields']
+        }],
+        mrkdwn_in: ['text', 'fields'],
+        ...standardMessageFormat
+      });
+    });
+
+    packageStatus$.subscribeOnError((e) => {
+      logger.error('error getting package status', e);
+    });
   }
 );
