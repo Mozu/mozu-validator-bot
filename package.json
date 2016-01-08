@@ -4,8 +4,7 @@
   "description": "a slack bot and simple http api for validating mozu npm packages across CI vendors",
   "main": "lib/index.js",
   "scripts": {
-    "premon": "npm run ci-build",
-    "mon": "nodemon --ignore --lib lib/index.js",
+    "mon": "nodemon --ignore lib `which npm` start",
     "debug": "npm run ci-build && node-debug lib/index.js",
     "prestart": "npm run ci-build",
     "start": "node lib/index.js",

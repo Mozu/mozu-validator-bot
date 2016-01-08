@@ -1,3 +1,4 @@
+import { inspect } from 'util';
 import Rx from 'rx';
 import { slackbot } from 'botkit';
 import fetch from 'node-fetch';
@@ -104,50 +105,54 @@ let successfulBuilds$ = githubHook.incoming.filter(
   )
 ).concatAll().filter(({ tag }) => tag && semver.clean(tag.name));
 
-successfulBuilds$.subscribeOnNext(({ repository, sha, tag }) => {
-  let name = repository.name;
-  logger.notice(
-    'gonna notify CI success on tag', name, sha
-  );
-  bot.sendWebhook({
-    channel: conf.statusChannel,
-    attachments: [
-      {
-        color: successColor,
-        fallback: `${name} ${tag.name} ready for publish.`,
-        pretext: `npm package build success for \`${name}\`!`,
-        title: `${tag.name} of the ${name} package is ready to be ` +
-          `published to NPM.`,
-        text: `When publishing, be sure your local repository is at ` +
-          `that exact version: \`git checkout ${tag.name} && npm ` +
-          `publish\`.`,
-        fields: Object.keys(tag).map((k) => {
-          let stringValue =
-            typeof tag[k] === 'string' ? tag[k] :
-              JSON.stringify(tag[k]);
-              return {
-                title: k,
-                value: stringValue,
-                short: stringValue.length < 20
-              };
-        }),
-        mrkdwn_in: ['pretext', 'text']
-      }
-    ],
-    ...successMessageFormat
-  });
-});
-
-successfulBuilds$.subscribeOnError(logger.error);
+successfulBuilds$.subscribe(
+  ({ repository, sha, tag }) => {
+    let name = repository.name;
+    logger.notice(
+      'gonna notify CI success on tag', name, sha
+    );
+    bot.sendWebhook({
+      channel: conf.statusChannel,
+      attachments: [
+        {
+          color: successColor,
+          fallback: `${name} ${tag.name} ready for publish.`,
+          pretext: `npm package build success for \`${name}\`!`,
+          title: `${tag.name} of the ${name} package is ready to be ` +
+            `published to NPM.`,
+            text: `When publishing, be sure your local repository is at ` +
+            `that exact version: \`git checkout ${tag.name} && npm ` +
+            `publish\`.`,
+          fields: Object.keys(tag).map((k) => {
+            let stringValue = typeof tag[k] === 'string' ? tag[k] :
+                JSON.stringify(tag[k]);
+            return {
+              title: k,
+              value: stringValue,
+              short: stringValue.length < 20
+            };
+          }),
+          mrkdwn_in: ['pretext', 'text']
+        }
+      ],
+      ...successMessageFormat
+    });
+  },
+  logger.error
+);
 
 function getPackageStatus(packageName, branch) {
   let getRepoData = github.forRepo(packageName);
   return getRepoData('tags')
   .map(
-    (tags) => Observable.just(tags).forkJoin(
+    (tags) => Observable.forkJoin(
+      Observable.just(tags),
       getRepoData('contents', '/', branch),
+      getRepoData('statuses', branch),
       getRepoData('commits'),
-      (tags, contents, commits) => ({ tags, contents, commits })
+      getNpmStatus(packageName),
+      (tags, contents, statuses, commits, npmInfo) =>
+        ({ tags, contents, statuses, commits, npmInfo })
     )
   ).concatAll().map(
     (data) => ({
@@ -187,6 +192,15 @@ function formatPackageStatus(d) {
   let readyForPublish = false;
   let headIsPublishable = false;
 
+  if (!contents.some(({ path }) => path === 'package.json')) {
+    status.good = false;
+    status.title = 'Nuts!';
+    status.text = `The \`${packageName}\` repository does not appear to ` +
+      `have a \`package.json\` file, so, not to put too fine a point on it, ` +
+      `but I don't care about it.`;
+    return status;
+  }
+
   status.fields['CI Providers Configured'] =
     ciProvidersConfigured.length > 0 ?
       ciProvidersConfigured.map(({ name }) => name).join(', ')
@@ -194,6 +208,7 @@ function formatPackageStatus(d) {
       '_None. I recommend at least one._';
 
   if (!latestGoodTag) {
+    status.title = 'Jinkies!';
     status.good = false;
     status.text = `I couldn't find any tagged versions in the ` +
       `\`${packageName}\` repository that had successfully built.`;
@@ -215,7 +230,7 @@ function formatPackageStatus(d) {
       `state first.`;
   }
 
-  if (!npmInfo) {
+  if (!npmInfo || !npmInfo.versions) {
     status.fields['Current version on NPM'] = '_Never published!_';
     if (ciProvidersConfigured.length > 0) {
       status.text = `I couldn't find the \`${packageName}\` package on NPM, ` +
@@ -301,13 +316,13 @@ dobbs.hears(
 
     let packageStatus$ = getPackageStatus(packageName, branch);
 
-    packageStatus$.subscribeOnNext((data) => {
+    packageStatus$.subscribe((data) => {
       let status = formatPackageStatus({ packageName, branch, ...data});
       dobbs.reply(msg, {
         text: `Status for \`${packageName}\``,
         attachments: [{
           color: status.good ? successColor : errorColor,
-          title: status.good ? 'Good News!' : 'Keep Calm!',
+          title: status.title || (status.good ? 'Good News!' : 'Keep Calm!'),
           text: status.text,
           fields: Object.keys(status.fields).map((k) => ({
             title: k,
@@ -319,10 +334,28 @@ dobbs.hears(
         mrkdwn_in: ['text', 'fields'],
         ...standardMessageFormat
       });
-    });
-
-    packageStatus$.subscribeOnError((e) => {
-      logger.error('error getting package status', e);
+    },
+    (e) => {
+      logger.error('status check failed', e);
+      let reply = {...errorMessageFormat};
+      if (e.statusCode === 404 &&
+          e.headers &&
+          e.headers.server === 'GitHub.com') {
+        reply.text = `Could not find \`${packageName}\` in the ` +
+          `\`${conf.githubOrg}\` GitHub organization. Is it private? _Does ` +
+          `it even exist?_`;
+      } else {
+        reply.text = `Boy, I had a doozy of a time trying to do that. Here ` +
+          `is the error.`;
+        reply.attachments = [
+          {
+            color: errorColor,
+            title: e.message,
+            text: '```\n' + inspect(e) + '\n```'
+          }
+        ];
+      }
+      dobbs.reply(msg, reply);
     });
   }
 );

@@ -9,7 +9,7 @@ export default function GithubClient({ logger, githubToken, githubOrg }) {
       let repoClient = github.repo(path);
       let methods = {};
       return (method, ...args) => {
-        logger.log('info', `calling github api method '${method} for ${path}`);
+        logger.log('info', `calling github method '${method}' for ${path}`);
         methods[method] = methods[method] || Observable.fromNodeCallback(
           repoClient[method],
           repoClient,
