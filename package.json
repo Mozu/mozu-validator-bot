@@ -1,6 +1,6 @@
 {
   "name": "mozu-validator-bot",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "a slack bot and simple http api for validating mozu npm packages across CI vendors",
   "main": "lib/index.js",
   "scripts": {
