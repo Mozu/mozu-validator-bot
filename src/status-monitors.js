@@ -55,8 +55,8 @@ export function filterForBuildSuccess({
       ),
       // O.forkJoin takes a selector function, so we can turn positional args
       // into named properties.
-      ({ repository, sha }, combinedStatus, contents) =>
-        ({ repository, sha, combinedStatus, contents })
+      (originalStatus, combinedStatus, contents) =>
+        ({ originalStatus, combinedStatus, contents })
     )
   )
   .filter(
@@ -87,16 +87,17 @@ export function filterForBuildSuccess({
      * NB: we do not currently use github releases and maybe we should
      *
      */
-    ({ repository, sha }) => O.forkJoin(
-      O.just({ repository, sha }),
-      githubClient.forRepo(repository.name)('tags'),
-      ({ repository, sha }, tags) =>
+    ({ originalStatus }) => O.forkJoin(
+      O.just(originalStatus),
+      githubClient.forRepo(originalStatus.repository.name)('tags'),
+      (originalStatus, tags) =>
       ({
-        repository,
-        sha,
+        originalStatus,
         // if there's a tag whose commit matches the sha of the current build,
         // add it to the data being piped through
-        tag: tags.find(({ commit }) => commit && commit.sha === sha)
+        tag: tags.find(
+          ({ commit }) => commit && commit.sha === originalStatus.sha
+        )
       })
     )
   )

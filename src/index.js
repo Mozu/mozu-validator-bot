@@ -7,7 +7,7 @@ import GithubClient from './github-client';
 import NpmClient from './npm-client';
 import frivolity from './frivolity';
 import IncomingRequests from './incoming-requests';
-import { colors, formats, formatPackageStatus } from './formatting';
+import Formatter from './formatting';
 import { allCiSucceeded } from './ci-check';
 import { filterForBuildSuccess, getPackageStatus } from './status-monitors';
 
@@ -15,6 +15,7 @@ const { logLevel, ciProviders, github, slack, statusChannel } = conf;
 
 if (logLevel > 5) Rx.config.longStackSupport = true;
 
+const { colors, formats, formatPackageStatus } = Formatter(conf);
 const logger = Logger(conf);
 const githubClient = GithubClient({ logger, ...conf });
 const npmClient = NpmClient({ logger, ...conf });
@@ -31,32 +32,29 @@ let successfulBuilds$ = filterForBuildSuccess({
 });
 
 successfulBuilds$.subscribe(
-  ({ repository, sha, tag }) => {
-    let name = repository.name;
+  ({ originalStatus, tag }) => {
+    let { sha, name, commit } = originalStatus;
+    let { author } = commit;
     logger.notice(
-      'gonna notify CI success on tag', name, sha
+      'gonna notify CI success on tag', originalStatus, tag
     );
     bot.sendWebhook({
       channel: statusChannel,
       attachments: [
         {
-          color: colors.success,
           fallback: `${name} ${tag.name} ready for publish.`,
-          pretext: `npm package build success for \`${name}\`!`,
+          pretext: `Build success for \`${name}\`!`,
+          color: colors.success,
+          author_name: author.login,
+          author_icon: author.avatar_url,
+          author_link: author.html_url,
+          thumb_url: originalStatus.organization.avatar_url,
           title: `${tag.name} of the ${name} package is ready to be ` +
             `published to NPM.`,
-            text: `When publishing, be sure your local repository is at ` +
-            `that exact version: \`git checkout ${tag.name} && npm ` +
-            `publish\`.`,
-          fields: Object.keys(tag).map((k) => {
-            let stringValue = typeof tag[k] === 'string' ? tag[k] :
-                JSON.stringify(tag[k]);
-            return {
-              title: k,
-              value: stringValue,
-              short: stringValue.length < 20
-            };
-          }),
+          title_link: originalStatus.repository.html_url,
+          text: `When publishing, be sure your local repository is at ` +
+          `that exact version: \`git checkout ${tag.name} && npm ` +
+          `publish\`.`,
           mrkdwn_in: ['pretext', 'text']
         }
       ],

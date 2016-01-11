@@ -2,23 +2,7 @@ import semver from 'semver';
 import moment from 'moment';
 import { botIcon, botName, successIcon, errorIcon } from './conf';
 
-export const colors = {
-  success: '#1DED05',
-  error: '#D00D00'
-};
-
-const standardMessageFormat = {
-  icon_url: botIcon,
-  username: botName
-};
-
-export const formats = {
-  standard: standardMessageFormat,
-  success: {...standardMessageFormat, icon_url: successIcon },
-  error: {...standardMessageFormat, icon_url: errorIcon }
-};
-
-export function formatPackageStatus(d) {
+function formatPackageStatus(d) {
   let {
     packageName,
     branch,
@@ -155,3 +139,23 @@ export function formatPackageStatus(d) {
 
   return status;
 }
+
+export default function Formats({ botIcon, botName, successIcon, errorIcon }) {
+  const standardMessageFormat = {
+    icon_url: botIcon,
+    username: botName
+  };
+  return {
+    colors: {
+      success: '#1DED05',
+      error: '#D00D00'
+    },
+    formats: {
+      standard: standardMessageFormat,
+      success: {...standardMessageFormat, icon_url: successIcon },
+      error: {...standardMessageFormat, icon_url: errorIcon }
+    },
+    formatPackageStatus
+  };
+};
+

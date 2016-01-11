@@ -7,6 +7,7 @@ const {
   GITHUB_TOKEN,
   LOG_LEVEL
 } = process.env;
+debugger;
 export default rc('mozu-validator-bot', {
   web: {
     port: PORT || 8009,
