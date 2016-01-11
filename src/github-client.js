@@ -10,7 +10,11 @@ function createMethodMemoizer(logger, instance) {
       (maybeStatus, data) =>
         typeof maybeStatus === 'number' ? data : maybeStatus
     );
-    logger.info(`calling github method '${method}'`);
+    if (method === 'get' || method === 'post') {
+      logger.info(`calling github ${method.toUpperCase()} ${args[0]}`);
+    } else {
+      logger.info(`calling github method '${method}'`);
+    }
     return methods[method](...args);
   };
 }

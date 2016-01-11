@@ -75,9 +75,10 @@ export default function({ logger, web, githubClient, github }) {
   }
 
   function getHost() {
-    return web.hostname ? Observable.just(host) : Observable.fromNodeCallback(
-      publicIp.v4, publicIp
-    )()
+    return web.hostname ? Observable.just(web.hostname) :
+      Observable.fromNodeCallback(
+        publicIp.v4, publicIp
+      )()
   }
 
   function ensureHookExistsForHost() {

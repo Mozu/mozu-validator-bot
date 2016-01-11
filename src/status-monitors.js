@@ -181,7 +181,7 @@ export function getPackageStatus({
          *
          **/
         ({ status }) => status.state === 'success'
-      ),
+      ).defaultIfEmpty({ tag: null }),
       // if a tag exists, we'll add it as `latestGoodTag` to the combined
       // payload. if it doesn't exist, this will all fall through to the error
       // operator.
