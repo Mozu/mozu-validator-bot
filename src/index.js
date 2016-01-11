@@ -1,91 +1,34 @@
 import { inspect } from 'util';
 import Rx from 'rx';
 import { slackbot } from 'botkit';
-import fetch from 'node-fetch';
-import semver from 'semver';
 import conf from './conf';
 import Logger from './logger';
 import GithubClient from './github-client';
+import NpmClient from './npm-client';
 import frivolity from './frivolity';
-import GithubHook from './github-hook-listener';
+import IncomingRequests from './incoming-requests';
 import { colors, formats, formatPackageStatus } from './formatting';
+import { allCiSucceeded } from './ci-check';
+import { filterForBuildSuccess, getPackageStatus } from './status-monitors';
 
-if (conf.logLevel > 5) Rx.config.longStackSupport = true;
-const { Observable } = Rx;
+const { logLevel, ciProviders, github, slack, statusChannel } = conf;
+
+if (logLevel > 5) Rx.config.longStackSupport = true;
 
 const logger = Logger(conf);
-const github = GithubClient({ logger, ...conf });
+const githubClient = GithubClient({ logger, ...conf });
+const npmClient = NpmClient({ logger, ...conf });
 const botController = slackbot({ logger });
-const githubHook = GithubHook({ logger, ...conf });
-
-const bot = botController.spawn({ 
-  token: conf.slackToken,
-  incoming_webhook: {
-    url: conf.slackWebhookUrl
-  }
-}).startRTM();
-
+const incoming = IncomingRequests({ logger, githubClient, ...conf});
+const bot = botController.spawn(slack).startRTM();
 const dobbs = frivolity(conf, botController);
 
-function allCiSucceeded({ repository, sha, statuses, contents }) {
-  let successes = statuses.filter(({ state }) => state === 'success');
-  return conf.ciProviders.every(
-    ({ name, configFile, statusContext }) => {
-      let isConfigured = contents.some(({ path }) => path === configFile);
-      let successFound = !isConfigured ||
-        successes.find(({ context }) => context === statusContext);
-      if (isConfigured && successFound) {
-        logger.notice(
-          `${name} build success for ${repository.name}#${sha}, triggered by`,
-          successFound
-        );
-      }
-      return !!successFound;
-    }
-  )
-}
-
-function getNpmStatus(packageName) {
-  return Observable.fromPromise(
-    fetch(conf.npmRegistry + packageName)
-      .then((res) => res.json())
-      .catch(() => false)
-  );
-}
-
-let successfulBuilds$ = githubHook.incoming.filter(
-  ({ event, data }) => event === 'status' && data.state === 'success'
-).do(
-  ({ data }) => logger.info('Received success notification', data)
-).map(
-  ({ data }) => {
-    let getRepoData = github.forRepo(data.repository.name);
-    return Observable.forkJoin(
-      Observable.just(data),
-      getRepoData('statuses', data.sha),
-      getRepoData('contents', '/', data.sha),
-      ({ repository, sha }, statuses, contents ) =>
-        ({ repository, sha, statuses, contents })
-    );
-  }
-).concatAll().filter(
-  ({ repository, sha, statuses, contents }) => {
-    logger.info('Received full status for', repository.name,  sha);
-    let hasPkg = contents.some(({ path }) => path === 'package.json');
-    return hasPkg && allCiSucceeded({ repository, sha, statuses, contents });
-  }
-).map(
-  ({ repository, sha }) => Observable.forkJoin(
-    Observable.of({ repository, sha }),
-    github.forRepo(repository.name)('tags'),
-    ({ repository, sha }, tags) =>
-      ({
-        repository,
-        sha,
-        tag: tags.find(({ commit }) => commit && commit.sha === sha)
-      })
-  )
-).concatAll().filter(({ tag }) => tag && semver.clean(tag.name));
+let successfulBuilds$ = filterForBuildSuccess({
+  events$: incoming.githubHooks,
+  logger,
+  githubClient,
+  github
+});
 
 successfulBuilds$.subscribe(
   ({ repository, sha, tag }) => {
@@ -94,7 +37,7 @@ successfulBuilds$.subscribe(
       'gonna notify CI success on tag', name, sha
     );
     bot.sendWebhook({
-      channel: conf.statusChannel,
+      channel: statusChannel,
       attachments: [
         {
           color: colors.success,
@@ -123,41 +66,6 @@ successfulBuilds$.subscribe(
   logger.error
 );
 
-function getPackageStatus(packageName, branch) {
-  let getRepoData = github.forRepo(packageName);
-  return getRepoData('tags')
-  .map(
-    (tags) => Observable.forkJoin(
-      Observable.just(tags),
-      getRepoData('contents', '/', branch),
-      getRepoData('statuses', branch),
-      getRepoData('commits'),
-      getNpmStatus(packageName),
-      (tags, contents, statuses, commits, npmInfo) =>
-        ({ tags, contents, statuses, commits, npmInfo })
-    )
-  ).concatAll().map(
-    (data) => ({
-      latestGoodTag: data.tags.find(
-        (tag) => allCiSucceeded({
-          repository: { name: packageName },
-          sha: tag.commit.sha,
-          statuses: data.statuses.filter(
-            ({ url }) => ~url.indexOf(tag.commit.sha)
-          ),
-          contents: data.contents
-        })
-      ),
-      ciProvidersConfigured: conf.ciProviders.filter(
-        ({ configFile }) =>
-          data.contents.some(({ path }) => path === configFile)
-      ),
-      ...data
-    })
-  )
-}
-
-
 dobbs.hears(
   ['status ([A-Za-z0-9\-\.\_]+)(?: ([A-Za-z0-9\-\/\_]+))?'],
   ['direct_mention'],
@@ -166,7 +74,14 @@ dobbs.hears(
     let branch = msg.match[2] || 'master';
     logger.info('package status requested', packageName, msg);
 
-    let packageStatus$ = getPackageStatus(packageName, branch);
+    let packageStatus$ = getPackageStatus({
+      packageName,
+      branch,
+      githubClient,
+      github,
+      npmClient,
+      ciProviders
+    });
 
     packageStatus$.subscribe((data) => {
       let status = formatPackageStatus(
@@ -181,7 +96,7 @@ dobbs.hears(
           fields: Object.keys(status.fields).map((k) => ({
             title: k,
             value: status.fields[k],
-            short: status.fields[k].length < 20
+            short: status.fields[k].length < 40
           })),
           mrkdwn_in: ['text', 'fields']
         }],
@@ -196,7 +111,7 @@ dobbs.hears(
           e.headers &&
           e.headers.server === 'GitHub.com') {
         reply.text = `Could not find \`${packageName}\` in the ` +
-          `\`${conf.githubOrg}\` GitHub organization. Is it private? _Does ` +
+          `\`${github.org}\` GitHub organization. Is it private? _Does ` +
           `it even exist?_`;
       } else {
         reply.text = `Boy, I had a doozy of a time trying to do that. Here ` +
@@ -205,11 +120,28 @@ dobbs.hears(
           {
             color: colors.error,
             title: e.message,
-            text: '```\n' + inspect(e) + '\n```'
+            text: '```\n' + inspect(e) + '\n```',
+            fields: [
+              {
+                title: 'Stack trace',
+                value: '```\n' + e.stack + '\n```',
+                short: false
+              }
+            ],
+            mrkdwn_in: ['text', 'fields']
           }
         ];
+        console.log(e.stack);
       }
       dobbs.reply(msg, reply);
     });
   }
+);
+
+incoming.checkRequests.subscribe(
+  ({ reply, name, branch = 'master' }) =>
+    getPackageStatus(name, branch).subscribe(
+      (d) => reply(200, d),
+      (e) => reply(400, e)
+    )
 );

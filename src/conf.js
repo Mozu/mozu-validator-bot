@@ -1,14 +1,29 @@
 'use strict';
 import rc from 'rc';
-import path from 'path';
-const { PORT, SLACK_TOKEN, GITHUB_TOKEN, LOG_PATH, LOG_LEVEL } = process.env;
+const {
+  PORT,
+  SLACK_TOKEN,
+  SLACK_WEBHOOK_URL,
+  GITHUB_TOKEN,
+  LOG_LEVEL
+} = process.env;
 export default rc('mozu-validator-bot', {
-  port: PORT || 8009,
-  hookPath: '/github-hook',
-  slackToken: SLACK_TOKEN,
-  logPath: LOG_PATH || path.join(process.cwd(), 'mozu-validator-bot.log'),
+  web: {
+    port: PORT || 8009,
+    protocol: 'http:',
+    hookPath: '/github-hook',
+    checkPath: '/check-package'
+  },
+  slack: {
+    token: SLACK_TOKEN,
+    incoming_webhook: {
+      url: SLACK_WEBHOOK_URL,
+    }
+  },
+  npm: {
+    registry: 'https://registry.npmjs.org/'
+  },
   logLevel: LOG_LEVEL || 5,
-  npmRegistry: 'https://registry.npmjs.org/',
   botIcon: 'http://i.imgur.com/QFFAmYT.png',
   successIcon: 'http://i.imgur.com/9yzNfsl.png',
   errorIcon: 'http://i.imgur.com/xLUWhF6.png',
@@ -20,8 +35,10 @@ export default rc('mozu-validator-bot', {
   // than organizations. So this token must belong to someone who belongs
   // to the organization. Obviously a blank token won't work; put a user
   // token in `.mozu-validator-botrc`.
-  githubToken: GITHUB_TOKEN,
-  githubOrg: 'mozu',
+  github: {
+    token: GITHUB_TOKEN,
+    org: 'mozu'
+  },
   // Each CI provider in this list will make the bot check, for each repo,
   // whether it has a file in its root that matches the `configFile` name for
   // the provider. If the repo has such a file, then for every "success" event

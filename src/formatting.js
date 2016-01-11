@@ -57,19 +57,20 @@ export function formatPackageStatus(d) {
     return status;
   }
 
-  status.fields['Latest valid tag in repo'] = latestGoodTag.name;
-  // status.fields['Latest tag created'] =
-  //   moment()
+  // get full commit object
+  latestGoodTag.commit = commits.find(
+    ({ sha }) => sha === latestGoodTag.commit.sha
+  );
+
+  let latestAuthor = latestGoodTag.commit.author;
+
+  status.fields['Latest valid tag in repo'] = 
+    `<${latestGoodTag.commit.html_url}|${latestGoodTag.name}>, created by ` +
+    `<${latestAuthor.html_url}|${latestAuthor.login}> ` +
+    moment(latestGoodTag.commit.commit.author.date).fromNow();
+
   headIsPublishable = latestGoodTag &&
     latestGoodTag.commit.sha === commits[0].sha;
-
-  if (!headIsPublishable) {
-    status.fields['Don\'t publish HEAD!'] = `The tip of the \`${branch}\` ` +
-      `branch of the \`${packageName}\` repository has moved ahead of the ` +
-      `latest known-good tag, so don't run \`npm publish\` willy-nilly; ` +
-      `use \`git checkout\` to get your working tree into a known-good ` +
-      `state first.`;
-  }
 
   if (!npmInfo || !npmInfo.versions) {
     status.fields['Current version on NPM'] = '_Never published!_';
@@ -96,8 +97,8 @@ export function formatPackageStatus(d) {
   let currentNpm = npmVersions[0];
 
   status.fields['Current version on NPM'] =
-    `<http://npmjs.org/package/${packageName}|${currentNpm.version}>`;
-  status.fields['Last published to NPM'] =
+    `<http://npmjs.org/package/${packageName}|${currentNpm.version}>, ` +
+    `created by ${currentNpm._npmUser.name} ` +
     moment(npmInfo.time[currentNpm.version]).fromNow();
 
   switch(semver.compare(currentNpm.version, latestGoodTag.name)) {
@@ -117,6 +118,14 @@ export function formatPackageStatus(d) {
         `NPM is *${currentNpm.version}*, and the repository is ahead by at ` +
         `least one ${semver.diff(currentNpm.version, latestGoodTag.name)} ` +
         `version: it's at *${latestGoodTag.name}*. *Ready to publish!*`;
+        if (!headIsPublishable) {
+          status.fields['Don\'t publish HEAD!'] = 
+            `The tip of the \`${branch}\` branch of the \`${packageName}\` ` +
+            `repository has moved ahead of ${latestGoodTag.name}, so don't ` +
+            `run \`npm publish\` willy-nilly; run ` +
+            `\`git checkout ${latestGoodTag.name}\` to get your working ` +
+            `tree into a known-good state first.`;
+        }
       break;
     case 1:
       status.good = false;
