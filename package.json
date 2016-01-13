@@ -16,6 +16,7 @@
     "validate-package": "mozu-validate-npm-package",
     "ci-build-stable": "npm run ci-build",
     "postci-build-stable": "npm run cov",
+    "preversion": "npm run ci-build-stable",
     "cov": "istanbul cover test/*.js",
     "test": "npm run tape",
     "tape": "tape test/**/*.js"
