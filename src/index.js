@@ -138,7 +138,14 @@ dobbs.hears(
 
 incoming.checkRequests.subscribe(
   ({ reply, name, branch = 'master' }) =>
-    getPackageStatus(name, branch).subscribe(
+    getPackageStatus({
+      packageName: name,
+      branch,
+      githubClient,
+      github,
+      npmClient,
+      ciProviders
+    }).subscribe(
       (d) => reply(200, d),
       (e) => reply(400, e)
     )
