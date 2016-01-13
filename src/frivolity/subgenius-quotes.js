@@ -8,5 +8,7 @@ export default [
   'You know how dumb the average person is? Well, by definition, half of \'em are even dumber than THAT.',
   'I don\'t practice what I preach because I\'m not the kind of person I\'m preaching to.',
   'Eternal Salvation — Or TRIPLE your money back!',
-  'I\'d rather be lucky than good any day.'
+  'I\'d rather be lucky than good any day.',
+  'I just blanked completely on things.',
+  'You know...I _don\'t_ hate this!'
 ];
