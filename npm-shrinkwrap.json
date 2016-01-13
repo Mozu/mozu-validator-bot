@@ -1,6 +1,6 @@
 {
   "name": "mozu-validator-bot",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "dependencies": {
     "abbrev": {
       "version": "1.0.7",
