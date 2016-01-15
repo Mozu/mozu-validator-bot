@@ -1,5 +1,5 @@
 import fetch from 'node-fetch';
-export default function() {
+export default function(logger) {
   return fetch('http://colonpipe.org/dobbs.json')
-  .then((x) => s.json())
+  .then((x) => x.json());
 }

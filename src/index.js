@@ -22,7 +22,7 @@ const npmClient = NpmClient({ logger, ...conf });
 const botController = slackbot({ logger });
 const incoming = IncomingRequests({ logger, githubClient, ...conf});
 const bot = botController.spawn(slack).startRTM();
-const dobbs = frivolity(conf, botController);
+const dobbs = frivolity(conf, logger, botController);
 
 let successfulBuilds$ = filterForBuildSuccess({
   events$: incoming.githubHooks,
