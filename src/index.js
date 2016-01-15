@@ -65,6 +65,26 @@ successfulBuilds$.subscribe(
 );
 
 dobbs.hears(
+  ['^help\\b'],
+  ['direct_mention'],
+  (dobbs, msg) => {
+    dobbs.reply(msg, {
+      text: `*I'm a validation monitor for Mozu NPM packages.*.
+
+I'm configured to monitor all NPM packages (that is, repositories with a \`package.json\`) in the \`https://github.com/${github.org}\` GitHub organization and notify this channel when one of them successfully builds using a configured continuous integration vendor.
+
+You don't need to configure me when you add a new package. I'm always listening to the whole \`${github.org}\` organization, so just create the NPM package and configure CI vendors (using a \`.travis.yml\` and/or an \`appveyor.yml\` file, for example) and I'll report about it.
+
+If you need to check on a package, you can ask me directly. Just ask me something like "@dobbs: status <package name>" and I'll give you the deets.
+
+You can also just say hi to me.`,
+      mrkdwn_in: ['text'],
+      ...formats.standard
+    });
+  }
+);
+
+dobbs.hears(
   ['status ([A-Za-z0-9\-\.\_]+)(?: ([A-Za-z0-9\-\/\_]+))?'],
   ['direct_mention'],
   (dobbs, msg) => {
